@@ -91,29 +91,42 @@ RUNID=$(date '+%Y-%m-%d-%H%M%S')
 QUEUE="$QUEUE_ROOT/$RUNID"
 mkdir -p "$QUEUE"
 
+# Ensure incoming exists
+mkdir -p "$INCOMING"
+
 ############################
-# CLAIM READY FILES
+# CLAIM READY FILES (scan -> log -> move)
 ############################
 
+READY_LIST="$(mktemp -p /tmp ingest-ready.XXXXXX)"
 CLAIM_COUNT=0
 
+# Pass 1: build list of stable files (null-delimited)
 while IFS= read -r -d '' file; do
     if is_stable "$file"; then
-        rel="${file#$INCOMING/}"
-        dest="$QUEUE/$rel"
-        mkdir -p "$(dirname "$dest")"
-        mv "$file" "$dest"
+        printf '%s\0' "$file" >> "$READY_LIST"
         CLAIM_COUNT=$((CLAIM_COUNT + 1))
     fi
 done < <(find "$INCOMING" -type f -print0)
 
 # If nothing claimed, exit silently (and remove empty queue dir)
 if (( CLAIM_COUNT == 0 )); then
+    rm -f "$READY_LIST"
     rmdir "$QUEUE" 2>/dev/null || true
     exit 0
 fi
 
 log "==== RUN START ($CLAIM_COUNT files claimed) ===="
+
+# Pass 2: move the ready files into the queue, preserving relative path
+while IFS= read -r -d '' file; do
+    rel="${file#$INCOMING/}"
+    dest="$QUEUE/$rel"
+    mkdir -p "$(dirname "$dest")"
+    mv "$file" "$dest"
+done < "$READY_LIST"
+
+rm -f "$READY_LIST"
 
 ############################
 # BEETS PASS
@@ -163,7 +176,7 @@ while IFS= read -r -d '' file; do
             fi
         fi
 
-        # determine loose vs tree
+        # determine loose vs tree (directly under incoming = loose; deeper = tree)
         if [[ "$rel" == */* ]]; then
             dest="$VIDEOS_ROOT/$rel"
         else
