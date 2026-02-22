@@ -13,7 +13,7 @@ MUSIC_UNMATCHED_ROOT="/herd/family/music/unmatched"
 MISC_ROOT="/herd/family/misc"
 LOGFILE="/var/log/ingest-media.log"
 
-STABILITY_SECONDS=30
+STABILITY_SECONDS=44
 BIGFILE_BYTES=$((3 * 1024 * 1024 * 1024)) # 3GB
 
 LOCKFILE="/run/lock/ingest-media.lock"
@@ -51,7 +51,7 @@ is_stable() {
     # size double sample
     local s1 s2
     s1=$(stat -c %s "$f")
-    sleep 2
+    sleep 3
     s2=$(stat -c %s "$f")
 
     [[ "$s1" -eq "$s2" ]]
@@ -73,13 +73,26 @@ copy_then_remove() {
 
     mkdir -p "$(dirname "$dest")"
 
-    # Cross-filesystem safe: copy then delete only on success.
-    if rsync -a --ignore-existing "$src" "$dest"; then
-        rm -f "$src"
-        return 0
-    else
+    # If destination already exists and matches size, treat as duplicate and delete source.
+    if [[ -e "$dest" ]]; then
+        local s_src s_dst
+        s_src=$(stat -c %s "$src" 2>/dev/null || echo 0)
+        s_dst=$(stat -c %s "$dest" 2>/dev/null || echo -1)
+        if [[ "$s_src" -eq "$s_dst" && "$s_src" -gt 0 ]]; then
+            rm -f "$src"
+            return 0
+        fi
+        # dest exists but doesn't match; do not delete source
         return 1
     fi
+
+    # Copy and delete on success
+    if rsync -a "$src" "$dest"; then
+        rm -f "$src"
+        return 0
+    fi
+
+    return 1
 }
 
 ############################
@@ -93,7 +106,9 @@ RUNID=$(date '+%Y-%m-%d-%H%M%S')
 QUEUE="$QUEUE_ROOT/$RUNID"
 mkdir -p "$QUEUE"
 
-mkdir -p "$INCOMING"
+if [[ ! -d "$INCOMING" ]]; then
+    install -d -o bloomer -g bloomer -m 0755 "$INCOMING"
+fi
 
 ############################
 # CLAIM READY FILES (scan -> log -> move)
@@ -133,8 +148,12 @@ find "$INCOMING" -depth -type d -empty -delete 2>/dev/null || true
 # BEETS PASS
 ############################
 
-log "Running beets..."
-beet import -q "$QUEUE" >> "$LOGFILE" 2>&1 || true
+if ! find "$QUEUE" -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.aac' -o -iname '*.aif' -o -iname '*.aiff' -o -iname '*.wma' \) -print -quit | grep -q .; then
+    log "Skipping beets (no obvious audio files in queue)"
+else
+    log "Running beets..."
+    beet import -q "$QUEUE" >> "$LOGFILE" 2>&1 || true
+fi
 
 ############################
 # VIDEO PASS
