@@ -9,6 +9,7 @@ set -euo pipefail
 INCOMING="/ssdtemp/incoming"
 QUEUE_ROOT="/ssdtemp/.ingest-queue"
 VIDEOS_ROOT="/herd/family/videos"
+MUSIC_UNMATCHED_ROOT="/herd/family/music/unmatched"
 MISC_ROOT="/herd/family/misc"
 LOGFILE="/var/log/ingest-media.log"
 
@@ -72,6 +73,7 @@ copy_then_remove() {
 
     mkdir -p "$(dirname "$dest")"
 
+    # Cross-filesystem safe: copy then delete only on success.
     if rsync -a --ignore-existing "$src" "$dest"; then
         rm -f "$src"
         return 0
@@ -91,7 +93,6 @@ RUNID=$(date '+%Y-%m-%d-%H%M%S')
 QUEUE="$QUEUE_ROOT/$RUNID"
 mkdir -p "$QUEUE"
 
-# Ensure incoming exists
 mkdir -p "$INCOMING"
 
 ############################
@@ -101,7 +102,6 @@ mkdir -p "$INCOMING"
 READY_LIST="$(mktemp -p /tmp ingest-ready.XXXXXX)"
 CLAIM_COUNT=0
 
-# Pass 1: build list of stable files (null-delimited)
 while IFS= read -r -d '' file; do
     if is_stable "$file"; then
         printf '%s\0' "$file" >> "$READY_LIST"
@@ -109,7 +109,6 @@ while IFS= read -r -d '' file; do
     fi
 done < <(find "$INCOMING" -type f -print0)
 
-# If nothing claimed, exit silently (and remove empty queue dir)
 if (( CLAIM_COUNT == 0 )); then
     rm -f "$READY_LIST"
     rmdir "$QUEUE" 2>/dev/null || true
@@ -118,7 +117,6 @@ fi
 
 log "==== RUN START ($CLAIM_COUNT files claimed) ===="
 
-# Pass 2: move the ready files into the queue, preserving relative path
 while IFS= read -r -d '' file; do
     rel="${file#$INCOMING/}"
     dest="$QUEUE/$rel"
@@ -127,6 +125,9 @@ while IFS= read -r -d '' file; do
 done < "$READY_LIST"
 
 rm -f "$READY_LIST"
+
+# Clean up empty directories left behind in incoming (after claiming files)
+find "$INCOMING" -depth -type d -empty -delete 2>/dev/null || true
 
 ############################
 # BEETS PASS
@@ -160,7 +161,7 @@ while IFS= read -r -d '' file; do
             fi
             ;;
         *)
-            mime=$(file -b --mime-type "$file")
+            mime=$(file -b --mime-type "$file" 2>/dev/null || true)
             if [[ "$mime" == video/* ]]; then
                 is_video=1
             fi
@@ -185,6 +186,49 @@ while IFS= read -r -d '' file; do
 
         if copy_then_remove "$file" "$dest"; then
             log "VIDEO -> $dest"
+        fi
+    fi
+done < <(find "$QUEUE" -type f -print0)
+
+############################
+# UNMATCHED AUDIO PASS (after video, before misc)
+############################
+
+AUDIO_BUCKET="$MUSIC_UNMATCHED_ROOT/$TIMESTAMP_DIR"
+
+while IFS= read -r -d '' file; do
+    rel="${file#$QUEUE/}"
+    ext="${file##*.}"
+    ext_lower=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+
+    is_audio=0
+
+    case "$ext_lower" in
+        # mp4/m4v are owned by the VIDEO pass decision (ffprobe). Never treat as audio here.
+        mp4|m4v)
+            is_audio=0
+            ;;
+        wav|flac|mp3|m4a|aac|ogg|opus|alac|aiff|aif|wma)
+            is_audio=1
+            ;;
+        *)
+            mime=$(file -b --mime-type "$file" 2>/dev/null || true)
+            if [[ "$mime" == audio/* ]]; then
+                is_audio=1
+            fi
+            ;;
+    esac
+
+    if (( is_audio == 1 )); then
+        # tree vs loose (same rule as video)
+        if [[ "$rel" == */* ]]; then
+            dest="$MUSIC_UNMATCHED_ROOT/$rel"
+        else
+            dest="$AUDIO_BUCKET/$rel"
+        fi
+
+        if copy_then_remove "$file" "$dest"; then
+            log "AUDIO_UNMATCHED -> $dest"
         fi
     fi
 done < <(find "$QUEUE" -type f -print0)
