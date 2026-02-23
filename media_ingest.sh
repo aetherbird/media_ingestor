@@ -11,7 +11,7 @@ QUEUE_ROOT="/ssdtemp/.ingest-queue"
 VIDEOS_ROOT="/herd/family/videos"
 MUSIC_UNMATCHED_ROOT="/herd/family/music/unmatched"
 MISC_ROOT="/herd/family/misc"
-LOGFILE="/var/log/ingest-media.log"
+LOGFILE="/var/log/media-ingest.log"
 
 # File stability rules:
 # - mtime must be at least STABILITY_SECONDS old
@@ -20,7 +20,7 @@ STABILITY_SECONDS=44
 STABILITY_SAMPLE_SECONDS=3
 
 BIGFILE_BYTES=$((3 * 1024 * 1024 * 1024)) # 3GB
-LOCKFILE="/run/lock/ingest-media.lock"
+LOCKFILE="/run/lock/media-ingest.lock"
 
 ############################
 # HELPERS
